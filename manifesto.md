@@ -6,39 +6,46 @@
 
 ```text
 .
-├── data/                       # 【データセット】 (CSVファイル)
-│   ├── races.csv               # レース基本情報
-│   ├── entries.csv             # 出走表データ (予測特徴量)
-│   └── results.csv             # レース結果 (正解ラベル)
-├── tests/                      # 【分析・学習スクリプト】 (ユーザー作成)
-│   ├── collect_training_data.py# データ収集スクリプト
-│   ├── train_model.py          # モデル学習スクリプト
+├── .venv/                      # Python仮想環境
+├── data/                       # 【データセット】
+│   ├── races.csv               # レース基本情報 (Phase 1出力)
+│   ├── entries.csv             # 出走表データ (Phase 1出力)
+│   ├── results.csv             # レース結果 (Phase 1出力)
+│   ├── training_base.csv       # 学習用ベースデータ (Phase 2出力)
+│   ├── training_featured.csv   # 特徴量エンジニアリング済みデータ (Phase 3出力)
+│   └── model.pkl               # 学習済みモデル (Phase 4出力)
+├── src/                        # 【データパイプライン】 (予測AI開発本番用)
+│   ├── collect_data_phase1.py        # Phase 1: データ収集スクリプト
+│   ├── transform_data_phase2.py      # Phase 2: データ変換・結合スクリプト
+│   ├── feature_engineering_phase3.py # Phase 3: 特徴量生成スクリプト
+│   └── train_model_phase4.py         # Phase 4: モデル学習・評価スクリプト
+├── tempt_tests_sandbox/        # 【旧・実験用スクリプト】 (アーカイブ)
+│   ├── collect_training_data.py
+│   ├── train_model.py
 │   └── ...
-├── PROJECT3.md                 # プロジェクト計画書
+├── pyjpboatrace/               # 【ボートレースライブラリ】 (外部ツール)
+│   ├── README.md               # 説明書
+│   ├── pyproject.toml          # ライブラリ設定
+│   ├── pyjpboatrace/           # ソースコード本体
+│   │   ├── pyjpboatrace.py     # 司令塔クラス
+│   │   ├── scraper/            # スクレイパー群
+│   │   │   ├── stadiums_scraper.py
+│   │   │   ├── races_scraper.py
+│   │   │   ├── result_scraper.py
+│   │   │   └── ...
+│   │   ├── operator/           # オペレーター群
+│   │   │   ├── better.py
+│   │   │   └── ...
+│   │   └── ...
+│   └── tests/                  # テストコード
+│       ├── scraper/
+│       ├── operator/
+│       └── ...
+├── PROJECT5.md                 # 要件定義書・プロジェクト計画
 ├── manifesto.md                # 構成図 (本書)
-└── pyjpboatrace/               # 【ボートレースライブラリ】 (外部ツール)
-    ├── README.md               # 説明書 (使い方やインストール方法)
-    ├── pyproject.toml          # プロジェクト設定 (依存ライブラリなど)
-    ├── .gitignore              # Gitで無視するファイルの設定
-    ├── pyjpboatrace/           # 【ソースコードの本体】
-    │   ├── __init__.py             # パッケージ初期化ファイル
-    │   ├── pyjpboatrace.py         # 司令塔クラス (ユーザーが直接使うメインファイル)
-    │   ├── user_information.py     # ユーザー情報 (ID/Pass) を管理するクラス
-    │   ├── drivers.py              # ブラウザ操作 (Chrome/Firefox等) を管理するモジュール
-    │   ├── scraper/                # 【情報収集部門】 (Webサイトからデータを取る)
-    │   │   ├── stadiums_scraper.py     # 開催場一覧を取得
-    │   │   ├── races_scraper.py        # 12レース一覧を取得
-    │   │   ├── race_info_scraper.py    # レース基本情報 (選手・モーターなど) を取得
-    │   │   ├── result_scraper.py       # レース結果・払い戻しを取得
-    │   │   └── ... (オッズ取得など)
-    │   ├── operator/               # 【投票操作部門】 (お金を扱う・投票する)
-    │   │   ├── better.py               # 投票を実行するクラス
-    │   │   ├── depositor.py            # 入金を実行するクラス
-    │   │   └── ...
-    │   └── utils/                  # 便利ツール置き場
-    └── tests/                  # 【品質保証部門】 (ライブラリ自体のテスト)
-        ├── test_pyjpboatrace.py    # メイン機能のテスト
-        └── ...
+├── pyproject.toml              # プロジェクト設定 (uv管理)
+├── uv.lock                     # 依存ライブラリのロックファイル
+└── README.md
 ```
 
 ## 📝 各ファイルの役割解説

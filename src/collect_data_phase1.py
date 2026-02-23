@@ -1,13 +1,12 @@
-
 import sys
 import os
 import pandas as pd
 from datetime import date, timedelta
 import time
 from typing import Dict, Any, List
+import requests
+from selenium.common.exceptions import WebDriverException
 
-# Add the local pyjpboatrace directory to path
-sys.path.append(os.path.abspath("pyjpboatrace"))
 from pyjpboatrace import PyJPBoatrace
 from pyjpboatrace.const import STADIUMS_MAP
 
@@ -47,9 +46,22 @@ def append_to_csv(filepath: str, data: List[Dict], columns: List[str]):
     # Write to CSV
     df.to_csv(filepath, mode='a', index=False, header=not file_exists, encoding='utf-8-sig')
 
+# --- Resume Capability ---
+def get_existing_race_ids():
+    if not os.path.exists(FILE_RACES):
+        return set()
+    try:
+        df = pd.read_csv(FILE_RACES, usecols=['race_id'])
+        return set(df['race_id'].unique())
+    except Exception:
+        return set()
+
 def collect_data_phase1(start_date: date, end_date: date, limit_races: int = 12):
     ensure_data_dir()
     boatrace = PyJPBoatrace()
+    
+    existing_races = get_existing_race_ids()
+    print(f"Found {len(existing_races)} existing races. Skipping these...")
     
     print(f"Starting data collection Phase 1: {start_date} to {end_date}")
     
@@ -57,11 +69,21 @@ def collect_data_phase1(start_date: date, end_date: date, limit_races: int = 12)
     while current_date <= end_date:
         print(f"\nTarget Date: {current_date}")
         
-        # 1. Get Stadiums
-        try:
-            stadiums = boatrace.get_stadiums(current_date)
-        except Exception as e:
-            print(f"  Error fetching stadiums: {e}")
+        # Retry mechanism for stadium fetching
+        stadiums = {}
+        for attempt in range(3):
+            try:
+                stadiums = boatrace.get_stadiums(current_date)
+                break
+            except (requests.exceptions.RequestException, WebDriverException) as e:
+                print(f"  Network/Browser Error fetching stadiums (Attempt {attempt+1}/3): {e}")
+                time.sleep(5)
+            except Exception as e:
+                print(f"  Fatal Error fetching stadiums (Parse error?): {e}")
+                break # Exit retry loop on structural error
+        
+        if not stadiums:
+            print(f"  Failed to fetch stadiums for {current_date}. Skipping date.")
             current_date += timedelta(days=1)
             continue
             
@@ -69,7 +91,6 @@ def collect_data_phase1(start_date: date, end_date: date, limit_races: int = 12)
         for name, data in stadiums.items():
             if name in ['date', 'status']: continue
             
-            # Find ID
             sid = NAME_TO_ID.get(name)
             if not sid:
                 for k, v in NAME_TO_ID.items():
@@ -82,15 +103,33 @@ def collect_data_phase1(start_date: date, end_date: date, limit_races: int = 12)
         print(f"  Active Stadiums: {len(active_stadiums)} venues")
         
         for sid, sname in active_stadiums:
+            # Let's check race 1 to limit_races.
+            missing_any = False
+            for r in range(1, limit_races + 1):
+                 rid_check = get_race_id(current_date, sid, r)
+                 if rid_check not in existing_races:
+                     missing_any = True
+                     break
+            
+            if not missing_any:
+                print(f"    [{sname}] All races exist. Skipping.")
+                continue
+
             print(f"    [{sname} (ID:{sid})]")
             
-            # 2. Get 12 Races Overview (for Deadline, Status)
-            try:
-                races_overview = boatrace.get_12races(current_date, sid)
-                time.sleep(1) # Sleep after request
-            except Exception as e:
-                print(f"      Error fetching 12races: {e}")
-                continue
+            # 2. Get 12 Races Overview
+            races_overview = {}
+            for attempt in range(3):
+                try:
+                    races_overview = boatrace.get_12races(current_date, sid)
+                    time.sleep(1)
+                    break
+                except (requests.exceptions.RequestException, WebDriverException) as e:
+                    print(f"      Network Error fetching 12races (Attempt {attempt+1}/3): {e}")
+                    time.sleep(5)
+                except Exception as e:
+                    print(f"      Fatal Error fetching 12races: {e}")
+                    break
 
             races_buffer = []
             entries_buffer = []
@@ -98,17 +137,31 @@ def collect_data_phase1(start_date: date, end_date: date, limit_races: int = 12)
 
             for race_no in range(1, limit_races + 1):
                 race_id = get_race_id(current_date, sid, race_no)
-                race_key = f"{race_no}R"
                 
+                # SKIP if already exists
+                if race_id in existing_races:
+                    continue
+                
+                race_key = f"{race_no}R"
                 overview = races_overview.get(race_key, {})
                 deadline = overview.get('vote_limit', '')
                 
                 # 3. Get Race Info (Entries)
-                try:
-                    info = boatrace.get_race_info(current_date, sid, race_no)
-                    time.sleep(1)
-                except Exception as e:
-                    print(f"      R{race_no:02d}: Info Error {e}")
+                info = {}
+                for attempt in range(3):
+                    try:
+                        info = boatrace.get_race_info(current_date, sid, race_no)
+                        time.sleep(1)
+                        break
+                    except (requests.exceptions.RequestException, WebDriverException) as e:
+                        print(f"      R{race_no:02d} Network Error (Attempt {attempt+1}): {e}")
+                        time.sleep(3)
+                    except Exception as e:
+                        print(f"      R{race_no:02d} Fatal Info Error: {e}")
+                        break
+                
+                if not info:
+                    print(f"      R{race_no:02d}: Failed to get info. Skipping race.")
                     continue
                 
                 # --- Build races.csv record ---
@@ -128,67 +181,87 @@ def collect_data_phase1(start_date: date, end_date: date, limit_races: int = 12)
                 for b_idx in range(1, 7):
                     boat_key = f"boat{b_idx}"
                     b_data = info.get(boat_key, {})
-                    
                     entries_buffer.append({
                         "race_id": race_id,
                         "boat_no": b_idx,
                         "racer_id": b_data.get("racerid"),
                         "name": b_data.get("name"),
                         "class": b_data.get("class"),
-                        "motor_p": b_data.get("motor_in2nd"), # motor 2-ren-ritsu
+                        "motor_p": b_data.get("motor_in2nd"),
                         "st_ave": b_data.get("aveST"),
-                        "fl": b_data.get("F"), # Flying count
+                        "fl": b_data.get("F"),
                     })
                 
                 # 4. Get Race Result
-                try:
-                    res = boatrace.get_race_result(current_date, sid, race_no)
-                    time.sleep(1)
-                except Exception as e:
-                    print(f"      R{race_no:02d}: Result Error {e}")
-                    continue
-                
-                # --- Build results.csv record ---
-                # Check if race was canceled or no result
-                if not res or 'result' not in res:
-                    continue
-                
-                rank_data = res.get('result', [])
-                # rank_data is usually a list of dicts: [{'rank': 1, 'boat': 1, ...}, ...]
-                
-                # Parse Payoff for 3-trifecta
-                payoff_data = res.get('payoff', {}).get('trifecta', {})
-                payoff_3t = payoff_data.get('payoff') # Might be list if multiple payouts
-                if isinstance(payoff_3t, list):
-                    payoff_3t = payoff_3t[0] # Take first one for simplicity or join
-                
-                # Parse Kimarite (Winning method)
-                kimarite = res.get('kimarite', '')
-                
-                # Get top 3 boats
-                rank1 = next((r['boat'] for r in rank_data if r['rank'] == 1), None)
-                rank2 = next((r['boat'] for r in rank_data if r['rank'] == 2), None)
-                rank3 = next((r['boat'] for r in rank_data if r['rank'] == 3), None)
+                res = {}
+                for attempt in range(3):
+                    try:
+                        res = boatrace.get_race_result(current_date, sid, race_no)
+                        time.sleep(1)
+                        break
+                    except (requests.exceptions.RequestException, WebDriverException) as e:
+                        print(f"      R{race_no:02d} Network Error (Attempt {attempt+1}): {e}")
+                        time.sleep(3)
+                    except Exception as e:
+                        # Sometimes result doesn't exist (cancelled), not always error.
+                        # But pyjpboatrace might raise error if page structure is diff due to cancellation.
+                        print(f"      R{race_no:02d} Result Parsing Error (or Cancelled): {e}")
+                        break # Do not retry on parse error
 
-                results_buffer.append({
-                    "race_id": race_id,
-                    "rank1_boat": rank1,
-                    "rank2_boat": rank2,
-                    "rank3_boat": rank3,
-                    "payoff_3t": payoff_3t,
-                    "win_method": kimarite
-                })
+                if res and 'result' in res:
+                    rank_data = res.get('result', [])
+                    payoff_data = res.get('payoff', {}).get('trifecta', {})
+                    payoff_3t = payoff_data.get('payoff')
+                    if isinstance(payoff_3t, list): payoff_3t = payoff_3t[0]
+                    kimarite = res.get('kimarite', '')
+                    
+                    rank1 = next((r['boat'] for r in rank_data if r['rank'] == 1), None)
+                    rank2 = next((r['boat'] for r in rank_data if r['rank'] == 2), None)
+                    rank3 = next((r['boat'] for r in rank_data if r['rank'] == 3), None)
+
+                    results_buffer.append({
+                        "race_id": race_id,
+                        "rank1_boat": rank1,
+                        "rank2_boat": rank2,
+                        "rank3_boat": rank3,
+                        "payoff_3t": payoff_3t,
+                        "win_method": kimarite
+                    })
                 
                 print(f"      R{race_no:02d}: OK")
 
             # Batch write for the stadium
-            append_to_csv(FILE_RACES, races_buffer, COLS_RACES)
-            append_to_csv(FILE_ENTRIES, entries_buffer, COLS_ENTRIES)
-            append_to_csv(FILE_RESULTS, results_buffer, COLS_RESULTS)
+            if races_buffer:
+                append_to_csv(FILE_RACES, races_buffer, COLS_RACES)
+                append_to_csv(FILE_ENTRIES, entries_buffer, COLS_ENTRIES)
+                append_to_csv(FILE_RESULTS, results_buffer, COLS_RESULTS)
+                
+                # Update known existing races in memory to avoid re-checking in same run if logic changes
+                for r in races_buffer:
+                    existing_races.add(r['race_id'])
         
         current_date += timedelta(days=1)
 
 if __name__ == "__main__":
-    # Example usage: Collect yesterday's data
-    target_date = date.today() - timedelta(days=1)
-    collect_data_phase1(target_date, target_date)
+    # Collect data for the last 2 years by default
+    # Or simple fixed range for now as per PROJECT5.md roadmap (e.g. 1-2 years)
+    
+    # 2024-01-01 to Yesterday
+    start_date = date(2024, 1, 1)
+    end_date = date.today() - timedelta(days=1)
+    
+    # Check if user provided args (simple check)
+    if len(sys.argv) >= 3:
+        try:
+            start_date = date.fromisoformat(sys.argv[1])
+            end_date = date.fromisoformat(sys.argv[2])
+        except ValueError:
+            print("Invalid date format. Use YYYY-MM-DD")
+            sys.exit(1)
+            
+    print(f"!!! Starting Robust Data Collection: {start_date} -> {end_date} !!!")
+    print("Resume capability enabled. Existing races will be skipped.")
+    print("Press Ctrl+C to stop safely.")
+    time.sleep(3)
+    
+    collect_data_phase1(start_date, end_date, limit_races=12)
